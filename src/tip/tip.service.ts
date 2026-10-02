@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, MoreThan, Repository } from 'typeorm';
+import { EntityManager, In, LessThan, MoreThan, Repository } from 'typeorm';
 import { ArticleService } from '../article/article.service';
 import { TokenService } from '../auth/token.service';
 import { ApiError, invalid, notFound } from '../common/api-error';
+import { Clock } from '../common/clock';
 import { formatMoney } from '../common/money';
 import { PaginationQuery } from '../common/pagination.dto';
 import { BLANK } from '../common/validation';
@@ -72,6 +73,7 @@ export class TipService {
     private readonly articles: ArticleService,
     private readonly tokens: TokenService,
     private readonly mail: MailService,
+    private readonly clock: Clock,
   ) {}
 
   /**
@@ -109,7 +111,7 @@ export class TipService {
       viewer !== undefined || (guestEmail !== null && sameAddress(guestEmail));
     if (!trusted) await this.assertMaySendCode(email);
 
-    const now = new Date();
+    const now = this.clock.now();
     const { id } = await this.tips.save(
       this.tips.create({
         reference: randomUUID(),
@@ -149,7 +151,7 @@ export class TipService {
     const tip = await this.getAwaitingCode(reference);
     const verification = await this.latestVerification(tip.id);
     const problem = verification
-      ? codeProblem(verification, new Date())
+      ? codeProblem(verification, this.clock.now())
       : 'has expired; ask for a new one';
     if (!verification || problem) throw invalid({ code: [problem!] });
 
@@ -162,7 +164,7 @@ export class TipService {
       throw invalid({ code: ['is wrong'] });
     }
 
-    const now = new Date();
+    const now = this.clock.now();
     await this.verifications.update(verification.id, { usedAt: now });
     tip.status = 'pending_payment';
     await this.tips.update(tip.id, {
@@ -223,7 +225,7 @@ export class TipService {
   // applied, inside that transaction.
 
   async markPaid(manager: EntityManager, tipId: number): Promise<void> {
-    const now = new Date();
+    const now = this.clock.now();
     await manager.update(Tip, tipId, {
       status: 'paid',
       paidAt: now,
@@ -235,15 +237,24 @@ export class TipService {
     await manager.update(
       Tip,
       { id: tipId, status: In(['pending_verification', 'pending_payment']) },
-      { status: 'expired', updatedAt: new Date() },
+      { status: 'expired', updatedAt: this.clock.now() },
     );
   }
 
   async markRefunded(manager: EntityManager, tipId: number): Promise<void> {
     await manager.update(Tip, tipId, {
       status: 'refunded',
-      updatedAt: new Date(),
+      updatedAt: this.clock.now(),
     });
+  }
+
+  /** Closes guest tips that have waited for their code since before `cutoff`; returns how many. */
+  async expireUnconfirmed(cutoff: Date): Promise<number> {
+    const result = await this.tips.update(
+      { status: 'pending_verification', createdAt: LessThan(cutoff) },
+      { status: 'expired', updatedAt: this.clock.now() },
+    );
+    return result.affected ?? 0;
   }
 
   /** Tells the tipper their payment arrived and the author that they were tipped. */
@@ -271,7 +282,7 @@ export class TipService {
   }
 
   private async startPayment(tip: Tip): Promise<StartedTip> {
-    const now = new Date();
+    const now = this.clock.now();
     const payment = await this.payments.save(
       this.payments.create({
         reference: randomUUID(),
@@ -322,7 +333,7 @@ export class TipService {
 
   private async sendCode(tip: Tip): Promise<void> {
     const code = newCode();
-    const now = new Date();
+    const now = this.clock.now();
     await this.verifications.insert({
       tipId: tip.id,
       email: tip.tipperEmail,
@@ -354,7 +365,7 @@ export class TipService {
   private async assertMaySendCode(email: string): Promise<void> {
     const recent = await this.verifications.countBy({
       email,
-      createdAt: MoreThan(new Date(Date.now() - HOUR_MS)),
+      createdAt: MoreThan(new Date(this.clock.now().getTime() - HOUR_MS)),
     });
     if (recent >= MAX_CODES_PER_HOUR) {
       throw new ApiError(HttpStatus.TOO_MANY_REQUESTS, {

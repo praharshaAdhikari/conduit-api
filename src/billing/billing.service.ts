@@ -5,10 +5,13 @@ import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { AdminService } from '../admin/admin.service';
 import { invalid, notFound } from '../common/api-error';
 import { isDuplicateKey } from '../common/db-errors';
-import { hasAccess } from '../membership/lifecycle';
+import { Clock } from '../common/clock';
+import { isLive } from '../membership/lifecycle';
 import type { MembershipChange } from '../membership/lifecycle';
 import { Membership } from '../membership/membership.entity';
+import type { ChangeSource } from '../membership/membership.entity';
 import { MembershipService } from '../membership/membership.service';
+import type { FollowUp } from '../membership/membership.service';
 import { planById } from '../membership/plans';
 import { PAYMENT_PROVIDER } from '../payment/payment-provider';
 import type {
@@ -33,10 +36,6 @@ type EventOf<T extends PaymentEvent['type']> = Extract<
 // What an event did, kept with the event. "ignored" is a normal result: the
 // provider is told the event was received either way, so it stops resending.
 const applied = 'applied';
-
-// Work to do once an event's changes are saved, such as sending an email.
-// It is kept out of the transaction: an email cannot be rolled back.
-type FollowUp = () => Promise<void>;
 const ignored = (why: string) => `ignored: ${why}`;
 
 /** Turns what the payment provider reports into payments and membership changes. */
@@ -51,6 +50,7 @@ export class BillingService {
     private readonly tips: TipService,
     private readonly admin: AdminService,
     private readonly dataSource: DataSource,
+    private readonly clock: Clock,
   ) {}
 
   /** Handles a webhook request: checks its signature, then applies the event once. */
@@ -66,6 +66,7 @@ export class BillingService {
   async process(
     event: PaymentEvent,
   ): Promise<{ duplicate: boolean; outcome?: string }> {
+    // Emails wait until the changes are saved: an email cannot be rolled back.
     const followUps: FollowUp[] = [];
     try {
       const outcome = await this.dataSource.transaction(async (manager) => {
@@ -75,7 +76,7 @@ export class BillingService {
           type: event.name,
           payload: event,
           outcome: 'processing',
-          receivedAt: new Date(),
+          receivedAt: this.clock.now(),
         });
         const result = await this.apply(manager, event, followUps);
         await manager.update(
@@ -85,9 +86,7 @@ export class BillingService {
         );
         return result;
       });
-      for (const followUp of followUps) {
-        await followUp().catch((error) => this.logger.warn(String(error)));
-      }
+      await this.runFollowUps(followUps);
       return { duplicate: false, outcome };
     } catch (error) {
       if (isDuplicateKey(error)) return { duplicate: true };
@@ -125,9 +124,15 @@ export class BillingService {
     // The provider is asked first: if it refuses, nothing here has changed.
     await this.provider.refund(payment.providerPaymentId);
 
+    const followUps: FollowUp[] = [];
     const endedSubscription = await this.dataSource.transaction(
       async (manager) => {
-        const subscriptionId = await this.markRefunded(manager, payment);
+        const subscriptionId = await this.markRefunded(
+          manager,
+          payment,
+          'admin',
+          followUps,
+        );
         await this.admin.record(manager, actor, 'refund', {
           type: 'payment',
           id: payment.id,
@@ -140,6 +145,7 @@ export class BillingService {
     if (endedSubscription) {
       await this.provider.endSubscription(endedSubscription);
     }
+    await this.runFollowUps(followUps);
     return toAdminView(payment);
   }
 
@@ -154,23 +160,34 @@ export class BillingService {
       case 'checkout.expired':
         return this.checkoutExpired(manager, event);
       case 'subscription.renewed':
-        return this.subscriptionRenewed(manager, event);
+        return this.subscriptionRenewed(manager, event, followUps);
       case 'subscription.payment_failed':
-        return this.subscriptionChanged(manager, event.subscriptionId, {
-          type: 'payment_failed',
-        });
+        return this.subscriptionChanged(
+          manager,
+          event.subscriptionId,
+          { type: 'payment_failed' },
+          followUps,
+        );
       case 'subscription.updated':
-        return this.subscriptionChanged(manager, event.subscriptionId, {
-          type: 'cancel_at_period_end',
-          value: event.cancelAtPeriodEnd,
-          periodEnd: event.periodEnd,
-        });
+        return this.subscriptionChanged(
+          manager,
+          event.subscriptionId,
+          {
+            type: 'cancel_at_period_end',
+            value: event.cancelAtPeriodEnd,
+            periodEnd: event.periodEnd,
+          },
+          followUps,
+        );
       case 'subscription.ended':
-        return this.subscriptionChanged(manager, event.subscriptionId, {
-          type: 'ended',
-        });
+        return this.subscriptionChanged(
+          manager,
+          event.subscriptionId,
+          { type: 'ended' },
+          followUps,
+        );
       case 'payment.refunded':
-        return this.paymentRefunded(manager, event);
+        return this.paymentRefunded(manager, event, followUps);
       case 'ignored':
         return Promise.resolve(ignored('not an event this API uses'));
     }
@@ -191,7 +208,7 @@ export class BillingService {
       return ignored(`the payment is ${payment.status}`);
     }
 
-    const now = new Date();
+    const now = this.clock.now();
     await manager.update(Payment, payment.id, {
       status: 'succeeded',
       providerPaymentId: event.paymentId,
@@ -207,7 +224,7 @@ export class BillingService {
         manager,
         membership,
         { type: 'paid', periodEnd: event.periodEnd },
-        event.subscriptionId,
+        { source: 'webhook', subscriptionId: event.subscriptionId, followUps },
       );
     }
     if (payment.kind === 'tip' && payment.tipId !== null) {
@@ -230,7 +247,7 @@ export class BillingService {
 
     await manager.update(Payment, payment.id, {
       status: 'expired',
-      updatedAt: new Date(),
+      updatedAt: this.clock.now(),
     });
     if (payment.tipId !== null) {
       await this.tips.markExpired(manager, payment.tipId);
@@ -241,6 +258,7 @@ export class BillingService {
   private async subscriptionRenewed(
     manager: EntityManager,
     event: EventOf<'subscription.renewed'>,
+    followUps: FollowUp[],
   ): Promise<string> {
     const membership = await this.findBySubscription(
       manager,
@@ -248,7 +266,7 @@ export class BillingService {
     );
     if (!membership) return ignored('no membership has this subscription');
 
-    const now = new Date();
+    const now = this.clock.now();
     const plan = planById(membership.plan);
     await manager.insert(Payment, {
       reference: randomUUID(),
@@ -268,10 +286,12 @@ export class BillingService {
       createdAt: now,
       updatedAt: now,
     });
-    await this.memberships.change(manager, membership, {
-      type: 'paid',
-      periodEnd: event.periodEnd,
-    });
+    await this.memberships.change(
+      manager,
+      membership,
+      { type: 'paid', periodEnd: event.periodEnd },
+      { source: 'webhook', followUps },
+    );
     return applied;
   }
 
@@ -279,13 +299,16 @@ export class BillingService {
     manager: EntityManager,
     subscriptionId: string,
     change: MembershipChange,
+    followUps: FollowUp[],
   ): Promise<string> {
     const membership = await this.findBySubscription(manager, subscriptionId);
     if (!membership) return ignored('no membership has this subscription');
 
-    const before = JSON.stringify(membership);
-    await this.memberships.change(manager, membership, change);
-    return hasChanged(before, membership)
+    const changed = await this.memberships.change(manager, membership, change, {
+      source: 'webhook',
+      followUps,
+    });
+    return changed
       ? applied
       : ignored(`changes nothing on a ${membership.status} membership`);
   }
@@ -293,6 +316,7 @@ export class BillingService {
   private async paymentRefunded(
     manager: EntityManager,
     event: EventOf<'payment.refunded'>,
+    followUps: FollowUp[],
   ): Promise<string> {
     const payment = await manager.findOne(Payment, {
       where: {
@@ -303,7 +327,7 @@ export class BillingService {
     });
     if (!payment) return ignored('no payment has this provider id');
     if (payment.status === 'refunded') return ignored('already refunded');
-    await this.markRefunded(manager, payment);
+    await this.markRefunded(manager, payment, 'webhook', followUps);
     return applied;
   }
 
@@ -315,8 +339,10 @@ export class BillingService {
   private async markRefunded(
     manager: EntityManager,
     payment: Payment,
+    source: ChangeSource,
+    followUps: FollowUp[],
   ): Promise<string | null> {
-    const now = new Date();
+    const now = this.clock.now();
     payment.status = 'refunded';
     payment.refundedAt = now;
     await manager.update(Payment, payment.id, {
@@ -344,12 +370,23 @@ export class BillingService {
     if (
       !membership ||
       latest?.id !== payment.id ||
-      !hasAccess(membership.status)
+      !isLive(membership.status)
     ) {
       return null;
     }
-    await this.memberships.change(manager, membership, { type: 'refunded' });
+    await this.memberships.change(
+      manager,
+      membership,
+      { type: 'refunded' },
+      { source, followUps },
+    );
     return membership.providerSubscriptionId;
+  }
+
+  private async runFollowUps(followUps: FollowUp[]): Promise<void> {
+    for (const followUp of followUps) {
+      await followUp().catch((error) => this.logger.warn(String(error)));
+    }
   }
 
   private findBySubscription(
@@ -364,15 +401,6 @@ export class BillingService {
       lock: { mode: 'pessimistic_write' },
     });
   }
-}
-
-/** Whether anything but updatedAt differs from the snapshot taken before a change. */
-function hasChanged(before: string, membership: Membership): boolean {
-  const was = JSON.parse(before) as Record<string, unknown>;
-  const now = JSON.parse(JSON.stringify(membership)) as Record<string, unknown>;
-  return Object.keys(now).some(
-    (key) => key !== 'updatedAt' && was[key] !== now[key],
-  );
 }
 
 function toAdminView(payment: Payment): AdminPaymentView {

@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AdminModule } from './admin/admin.module';
 import { ArticleModule } from './article/article.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CommentModule } from './comment/comment.module';
+import { ClockModule } from './common/clock';
 import { typeOrmOptions } from './database/typeorm-options';
 import { HealthController } from './health/health.controller';
 import { MailModule } from './mail/mail.module';
@@ -21,6 +23,8 @@ import { UserModule } from './user/user.module';
     // Reads .env into process.env; variables already set win.
     ConfigModule.forRoot(),
     TypeOrmModule.forRootAsync({ useFactory: typeOrmOptions }),
+    ScheduleModule.forRoot(),
+    ClockModule,
     AuthModule,
     // After ConfigModule: the payment provider is chosen from the environment.
     PaymentModule.forRoot(),

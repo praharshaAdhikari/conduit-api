@@ -67,3 +67,38 @@ export class Membership {
   @Column({ name: 'updated_at', type: 'datetime', precision: 3 })
   updatedAt: Date;
 }
+
+export const CHANGE_SOURCES = [
+  'member',
+  'webhook',
+  'reconcile',
+  'admin',
+] as const;
+export type ChangeSource = (typeof CHANGE_SOURCES)[number];
+
+@Entity('membership_events')
+export class MembershipEvent {
+  @PrimaryGeneratedColumn({ unsigned: true })
+  id: number;
+
+  @Column({ name: 'membership_id', unsigned: true })
+  membershipId: number;
+
+  @Column({ name: 'from_status', type: 'varchar', length: 16, nullable: true })
+  fromStatus: MembershipStatus | null;
+
+  @Column({ name: 'to_status', type: 'varchar', length: 16 })
+  toStatus: MembershipStatus;
+
+  @Column({ type: 'varchar', length: 32 })
+  reason: string;
+
+  @Column({ type: 'varchar', length: 16 })
+  source: ChangeSource;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  detail: string | null;
+
+  @Column({ name: 'created_at', type: 'datetime', precision: 3 })
+  createdAt: Date;
+}

@@ -61,6 +61,13 @@ export class MembershipController {
     return { membership: await this.memberships.resume(userId) };
   }
 
+  @Get('history')
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  history(@CurrentUserId() userId: number, @Query() query: PaginationQuery) {
+    return this.memberships.history(userId, query);
+  }
+
   @Get('payments')
   @UseGuards(AuthGuard)
   @ApiBearerAuth()

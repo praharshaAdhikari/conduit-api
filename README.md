@@ -59,6 +59,7 @@ Payments work out of the box: the default provider is a fake one built into this
 | `npm run db:migrate` | Applies the SQL files in `migrations/` that have not been applied yet |
 | `npm run seed` | Adds the demo data; skips whatever is already there |
 | `npm run user:role -- <username> <role>` | Sets a user's role (`user`, `moderator` or `admin`); this is how the first admin is made |
+| `npm run membership:reconcile` | Runs the reconcile job once and prints its report |
 
 ## Endpoints
 
@@ -99,6 +100,7 @@ All under `/api`. Send the token as `Authorization: Token <token>`.
 | `POST /membership/cancel` | required | Stop at the end of the paid period |
 | `POST /membership/resume` | required | Take a cancellation back |
 | `GET /membership/payments` | required | Your payments, newest first; paging |
+| `GET /membership/history` | required | What happened to your membership, newest first; paging |
 | `POST /tips` | optional | Start a tip; see "Tips" for the body |
 | `GET /tips/:reference` | none | A tip, by its reference |
 | `POST /tips/:reference/verify` | none | Confirm a guest's email; body `{ "verification": { "code": "123456" } }` |
@@ -106,6 +108,9 @@ All under `/api`. Send the token as `Authorization: Token <token>`.
 | `GET /user/tips` | required | Your tips; `direction` is `received` (the default) or `sent`; paging |
 | `POST /payments/webhook` | signature | Where the payment provider reports what happened |
 | `GET /admin/memberships` | moderator | All memberships; filter `status`; paging |
+| `GET /admin/memberships/:username/history` | moderator | What happened to a user's membership; paging |
+| `POST /admin/memberships/reconcile` | admin | Run the reconcile job now; returns its report |
+| `GET /admin/reconcile-runs` | moderator | Earlier runs of the job and their reports, newest first; paging |
 | `GET /admin/payments` | moderator | All payments; filters `kind`, `status`; paging |
 | `POST /admin/payments/:id/refund` | admin | Give a payment back |
 | `GET /admin/tips` | moderator | All tips, with the tipper's email; filter `status`; paging |
@@ -119,7 +124,7 @@ Errors always have the body `{ "errors": { "<field>": ["<message>"] } }`:
 | 401 | The token is missing or invalid, or the login is wrong |
 | 403 | The article or comment belongs to someone else, the account is suspended, or its role does not allow the action |
 | 404 | The article, comment, profile or user does not exist, or the article is hidden from you |
-| 409 | The username or email is already taken |
+| 409 | The username or email is already taken, or the reconcile job is already running |
 | 422 | A field is missing, blank or malformed, or the action does not apply (for example, hiding an article that is already hidden) |
 | 429 | Too many codes were sent to one email address |
 | 503 | An email that the request depends on could not be sent |
@@ -199,18 +204,24 @@ A member can read members-only articles. There are two plans: `monthly` (5.00 US
 | --- | --- | --- |
 | `pending` | A checkout was started and is not paid yet | no |
 | `active` | Paid | yes |
-| `past_due` | A renewal payment failed | yes |
+| `past_due` | A renewal payment failed | yes, until 7 days after the end of the paid period |
 | `cancelled` | Ended because the member cancelled, or the payment was refunded | no |
-| `lapsed` | Ended because a renewal was never paid | no |
+| `lapsed` | Ended because a payment was never made: a renewal, or a checkout that was abandoned | no |
 
 The user object includes `membership` (`null` until the user first starts a checkout), with `status`,
-`plan`, `hasAccess`, `currentPeriodEnd`, `cancelAtPeriodEnd`, `startedAt` and `endedAt`.
+`plan`, `hasAccess`, `currentPeriodEnd`, `cancelAtPeriodEnd`, `graceEndsAt`, `startedAt` and `endedAt`.
+
+`hasAccess` is the answer to "can this user read members-only articles right now". It is not the same
+as the status: a `past_due` membership whose 7 days have run out has no access, although it stays
+`past_due` until the reconcile job ends it. `graceEndsAt` is that moment, and is `null` for every other
+status.
 
 **Paying**
 
 - `POST /membership/checkout` returns a `checkoutUrl` at the payment provider. The membership becomes
   `active` when the provider's webhook says the payment went through, not when the user comes back.
-- A user who has access cannot start a checkout (422). Anyone else can, including someone `pending`.
+- An `active` or `past_due` membership cannot start a checkout (422), because its subscription is still
+  running at the provider. Anyone else can, including someone `pending`.
 - Starting a checkout closes any earlier one that is still open, so a membership cannot be paid twice.
   The earlier payment is listed as `expired`.
 - After paying, the provider sends the user to `WEB_URL/membership/success`; after cancelling, to
@@ -226,6 +237,34 @@ The user object includes `membership` (`null` until the user first starts a chec
   `lapsed` if not.
 - Joining again reuses the same membership: it goes `pending`, then `active` with a new start date.
 
+**History and email**
+
+- Every change of status, of `cancelAtPeriodEnd` or of the paid period is recorded with its reason and
+  its source: `member`, `webhook`, `reconcile` or `admin`. A change that alters nothing is not recorded.
+- The member is emailed when the membership starts, when a payment fails, when they cancel, and when
+  the membership ends.
+
+**The reconcile job**
+
+Webhooks can be late or lost, and some things happen only because time passes. The job puts both right.
+It runs every night (`RECONCILE_CRON`, 03:00 UTC by default), from `npm run membership:reconcile`, and
+when an admin calls `POST /admin/memberships/reconcile`. Each run:
+
+1. Asks the provider about every `active` and `past_due` membership's subscription and applies the
+   difference, as the missing webhook would have: a failed payment, a renewal, a cancellation, an
+   ending. A subscription the provider does not know counts as ended.
+2. Ends `past_due` memberships whose 7 days are over (`lapsed`) and ends their subscriptions at the
+   provider.
+3. Closes checkouts that have been unpaid for 24 hours. The payment becomes `expired`; a tip waiting on
+   it becomes `expired`; a `pending` membership becomes `lapsed`.
+4. Expires guest tips that have waited 24 hours for their code.
+
+- A problem with one membership is listed under `errors` in the report and the run carries on.
+- Only one run happens at a time. A second one is refused with 409, whichever way it was started.
+- Running it again straight away changes nothing.
+- A renewal the job discovers moves the paid period on but adds no payment; the payment appears when
+  the provider's webhook finally arrives.
+
 **Webhooks**
 
 - The provider's signature is checked against the exact bytes received. A missing or wrong signature is
@@ -239,8 +278,8 @@ The user object includes `membership` (`null` until the user first starts a chec
 
 - Only an admin can refund, and only a payment that succeeded: one that is `pending` or `expired` is a
   422, and so is one already refunded.
-- Refunding the latest payment of a membership that has access ends it at once (`cancelled`) and ends
-  the subscription at the provider. Refunding an older payment only marks that payment.
+- Refunding the latest payment of an `active` or `past_due` membership ends it at once (`cancelled`) and
+  ends the subscription at the provider. Refunding an older payment only marks that payment.
 - A refund is recorded in the moderation log.
 
 ## Tips
@@ -352,7 +391,7 @@ src/
   main.ts          starts the app: /api prefix, CORS, validation, error format, Swagger
   config/          reads environment variables
   database/        TypeORM connection, the migration runner, the seed, the role command
-  common/          error format, validation, paging
+  common/          error format, validation, paging, money, the clock
   auth/            tokens, roles, and the guards that check them
   user/            register, log in, current user
   profile/         profiles, follow and unfollow
@@ -361,8 +400,8 @@ src/
   tag/             the tag list
   admin/           suspending users, hiding articles, roles, the moderation log
   payment/         the payment provider: the interface, Stripe, and the fake one
-  membership/      plans, a membership's status rules, checkout, cancel and resume
-  billing/         the webhook, applying its events, refunds, the admin lists
+  membership/      plans, a membership's status rules and history, checkout, cancel and resume
+  billing/         the webhook, applying its events, refunds, the reconcile job, the admin lists
   tip/             tips, the emailed codes that confirm a guest's address
   mail/            sending email, or logging it when there is no mail server
   health/          health check

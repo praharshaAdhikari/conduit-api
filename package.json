@@ -22,7 +22,9 @@
     "seed:built": "node dist/database/seed.js",
     "db:migrate:built": "node dist/database/migrate.js",
     "user:role": "ts-node src/database/set-role.ts",
-    "user:role:built": "node dist/database/set-role.js"
+    "user:role:built": "node dist/database/set-role.js",
+    "membership:reconcile": "ts-node src/database/reconcile.ts",
+    "membership:reconcile:built": "node dist/database/reconcile.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -30,6 +32,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/schedule": "^12.0.2",
     "@nestjs/swagger": "^11.4.7",
     "@nestjs/typeorm": "^11.0.3",
     "argon2": "^0.45.1",

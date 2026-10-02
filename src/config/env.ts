@@ -88,3 +88,9 @@ export function mailSettings(env: NodeJS.ProcessEnv = process.env) {
     from: env.MAIL_FROM || 'Conduit <no-reply@conduit.example>',
   };
 }
+
+export function reconcileSettings(env: NodeJS.ProcessEnv = process.env) {
+  const cron = env.RECONCILE_CRON || '0 3 * * *';
+  /** When the reconcile job runs, as a cron expression in UTC; null if it is switched off. */
+  return { cron: cron === 'off' ? null : cron };
+}
