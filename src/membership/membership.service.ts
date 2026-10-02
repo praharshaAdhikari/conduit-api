@@ -104,6 +104,7 @@ export class MembershipService {
         kind: 'membership',
         userId: user.id,
         membershipId: membership.id,
+        tipId: null,
         amountCents: plan.amountCents,
         currency: plan.currency,
         description: `Conduit membership (${plan.name.toLowerCase()})`,

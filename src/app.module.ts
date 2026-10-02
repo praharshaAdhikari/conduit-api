@@ -8,10 +8,12 @@ import { BillingModule } from './billing/billing.module';
 import { CommentModule } from './comment/comment.module';
 import { typeOrmOptions } from './database/typeorm-options';
 import { HealthController } from './health/health.controller';
+import { MailModule } from './mail/mail.module';
 import { MembershipModule } from './membership/membership.module';
 import { PaymentModule } from './payment/payment.module';
 import { ProfileModule } from './profile/profile.module';
 import { TagController } from './tag/tag.controller';
+import { TipModule } from './tip/tip.module';
 import { UserModule } from './user/user.module';
 
 @Module({
@@ -22,12 +24,14 @@ import { UserModule } from './user/user.module';
     AuthModule,
     // After ConfigModule: the payment provider is chosen from the environment.
     PaymentModule.forRoot(),
+    MailModule,
     UserModule,
     ProfileModule,
     ArticleModule,
     CommentModule,
     AdminModule,
     MembershipModule,
+    TipModule,
     BillingModule,
   ],
   controllers: [HealthController, TagController],

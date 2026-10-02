@@ -45,6 +45,9 @@ export class Payment {
   })
   membershipId: number | null;
 
+  @Column({ name: 'tip_id', type: 'int', unsigned: true, nullable: true })
+  tipId: number | null;
+
   @Column({ name: 'amount_cents', unsigned: true })
   amountCents: number;
 

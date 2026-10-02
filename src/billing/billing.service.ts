@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { AdminService } from '../admin/admin.service';
@@ -21,6 +21,7 @@ import {
   PaymentEventRecord,
   toPaymentView,
 } from '../payment/payment.entity';
+import { TipService } from '../tip/tip.service';
 import { User } from '../user/user.entity';
 import { AdminPaymentsQuery, AdminPaymentView } from './billing.dto';
 
@@ -32,15 +33,22 @@ type EventOf<T extends PaymentEvent['type']> = Extract<
 // What an event did, kept with the event. "ignored" is a normal result: the
 // provider is told the event was received either way, so it stops resending.
 const applied = 'applied';
+
+// Work to do once an event's changes are saved, such as sending an email.
+// It is kept out of the transaction: an email cannot be rolled back.
+type FollowUp = () => Promise<void>;
 const ignored = (why: string) => `ignored: ${why}`;
 
 /** Turns what the payment provider reports into payments and membership changes. */
 @Injectable()
 export class BillingService {
+  private readonly logger = new Logger(BillingService.name);
+
   constructor(
     @InjectRepository(Payment) private readonly payments: Repository<Payment>,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly memberships: MembershipService,
+    private readonly tips: TipService,
     private readonly admin: AdminService,
     private readonly dataSource: DataSource,
   ) {}
@@ -58,6 +66,7 @@ export class BillingService {
   async process(
     event: PaymentEvent,
   ): Promise<{ duplicate: boolean; outcome?: string }> {
+    const followUps: FollowUp[] = [];
     try {
       const outcome = await this.dataSource.transaction(async (manager) => {
         await manager.insert(PaymentEventRecord, {
@@ -68,7 +77,7 @@ export class BillingService {
           outcome: 'processing',
           receivedAt: new Date(),
         });
-        const result = await this.apply(manager, event);
+        const result = await this.apply(manager, event, followUps);
         await manager.update(
           PaymentEventRecord,
           { provider: this.provider.name, eventId: event.id },
@@ -76,6 +85,9 @@ export class BillingService {
         );
         return result;
       });
+      for (const followUp of followUps) {
+        await followUp().catch((error) => this.logger.warn(String(error)));
+      }
       return { duplicate: false, outcome };
     } catch (error) {
       if (isDuplicateKey(error)) return { duplicate: true };
@@ -131,10 +143,14 @@ export class BillingService {
     return toAdminView(payment);
   }
 
-  private apply(manager: EntityManager, event: PaymentEvent): Promise<string> {
+  private apply(
+    manager: EntityManager,
+    event: PaymentEvent,
+    followUps: FollowUp[],
+  ): Promise<string> {
     switch (event.type) {
       case 'checkout.completed':
-        return this.checkoutCompleted(manager, event);
+        return this.checkoutCompleted(manager, event, followUps);
       case 'checkout.expired':
         return this.checkoutExpired(manager, event);
       case 'subscription.renewed':
@@ -163,6 +179,7 @@ export class BillingService {
   private async checkoutCompleted(
     manager: EntityManager,
     event: EventOf<'checkout.completed'>,
+    followUps: FollowUp[],
   ): Promise<string> {
     // Locked, so two events about one payment are applied one after the other.
     const payment = await manager.findOne(Payment, {
@@ -193,6 +210,11 @@ export class BillingService {
         event.subscriptionId,
       );
     }
+    if (payment.kind === 'tip' && payment.tipId !== null) {
+      const { tipId } = payment;
+      await this.tips.markPaid(manager, tipId);
+      followUps.push(() => this.tips.sendReceipts(tipId));
+    }
     return applied;
   }
 
@@ -200,12 +222,20 @@ export class BillingService {
     manager: EntityManager,
     event: EventOf<'checkout.expired'>,
   ): Promise<string> {
-    const result = await manager.update(
-      Payment,
-      { reference: event.reference, status: 'pending' },
-      { status: 'expired', updatedAt: new Date() },
-    );
-    return result.affected ? applied : ignored('no open payment');
+    const payment = await manager.findOne(Payment, {
+      where: { reference: event.reference, status: 'pending' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!payment) return ignored('no open payment');
+
+    await manager.update(Payment, payment.id, {
+      status: 'expired',
+      updatedAt: new Date(),
+    });
+    if (payment.tipId !== null) {
+      await this.tips.markExpired(manager, payment.tipId);
+    }
+    return applied;
   }
 
   private async subscriptionRenewed(
@@ -225,6 +255,7 @@ export class BillingService {
       kind: 'membership',
       userId: membership.userId,
       membershipId: membership.id,
+      tipId: null,
       amountCents: event.amountCents,
       currency: plan?.currency ?? 'usd',
       description: `Conduit membership renewal (${membership.plan})`,
@@ -293,6 +324,9 @@ export class BillingService {
       refundedAt: now,
       updatedAt: now,
     });
+    if (payment.tipId !== null) {
+      await this.tips.markRefunded(manager, payment.tipId);
+    }
     if (payment.kind !== 'membership' || payment.membershipId === null) {
       return null;
     }

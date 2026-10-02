@@ -1,3 +1,4 @@
+import { formatMoney } from '../../common/money';
 import type { FakeCheckout } from './fake-pay.entity';
 import { DELIVERIES, LATER_MS } from './fake-pay.service';
 
@@ -9,10 +10,6 @@ const escapeHtml = (value: string) =>
         character
       ]!,
   );
-
-export function formatMoney(amountCents: number, currency: string): string {
-  return `${(amountCents / 100).toFixed(2)} ${currency.toUpperCase()}`;
-}
 
 const DELIVERY_LABELS: Record<(typeof DELIVERIES)[number], string> = {
   now: 'Straight away (before you are sent back)',

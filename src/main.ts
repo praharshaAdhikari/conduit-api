@@ -18,7 +18,7 @@ async function bootstrap() {
     new DocumentBuilder()
       .setTitle('Conduit API')
       .setDescription(
-        'The RealWorld API spec, plus roles, moderation and paid memberships.',
+        'The RealWorld API spec, plus roles, moderation, paid memberships and tips.',
       )
       .addBearerAuth()
       .build(),

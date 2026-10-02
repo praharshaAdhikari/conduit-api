@@ -2,7 +2,7 @@
 
 The backend of Conduit, a small blogging platform, on NestJS 11, TypeORM and MySQL 8. It implements the
 [RealWorld](https://github.com/realworld-apps/realworld) API spec and adds roles and moderation, and paid
-memberships through a payment provider.
+memberships and one-off tips through a payment provider.
 
 It is one of three repos that make up a practice system for learning QA:
 
@@ -40,8 +40,10 @@ npm run start:dev     # http://localhost:4000/api
   | `dave@example.com` | A suspended user; his one article is hidden |
   | `erin@example.com` | A paying member (monthly) |
 
+The seed also adds a paid 5.00 USD tip to alice from a guest (`reader@example.com`).
+
 Payments work out of the box: the default provider is a fake one built into this API (see
-"The fake payment provider" below).
+"The fake payment provider" below). Email is written to the log unless `SMTP_HOST` is set.
 
 `npm run db:stop` stops MySQL and keeps its data; `docker compose down -v` deletes the data.
 
@@ -97,10 +99,16 @@ All under `/api`. Send the token as `Authorization: Token <token>`.
 | `POST /membership/cancel` | required | Stop at the end of the paid period |
 | `POST /membership/resume` | required | Take a cancellation back |
 | `GET /membership/payments` | required | Your payments, newest first; paging |
+| `POST /tips` | optional | Start a tip; see "Tips" for the body |
+| `GET /tips/:reference` | none | A tip, by its reference |
+| `POST /tips/:reference/verify` | none | Confirm a guest's email; body `{ "verification": { "code": "123456" } }` |
+| `POST /tips/:reference/resend` | none | Email a new code |
+| `GET /user/tips` | required | Your tips; `direction` is `received` (the default) or `sent`; paging |
 | `POST /payments/webhook` | signature | Where the payment provider reports what happened |
 | `GET /admin/memberships` | moderator | All memberships; filter `status`; paging |
 | `GET /admin/payments` | moderator | All payments; filters `kind`, `status`; paging |
 | `POST /admin/payments/:id/refund` | admin | Give a payment back |
+| `GET /admin/tips` | moderator | All tips, with the tipper's email; filter `status`; paging |
 | `GET /health` | none | Whether the API can reach the database |
 
 Errors always have the body `{ "errors": { "<field>": ["<message>"] } }`:
@@ -113,6 +121,8 @@ Errors always have the body `{ "errors": { "<field>": ["<message>"] } }`:
 | 404 | The article, comment, profile or user does not exist, or the article is hidden from you |
 | 409 | The username or email is already taken |
 | 422 | A field is missing, blank or malformed, or the action does not apply (for example, hiding an article that is already hidden) |
+| 429 | Too many codes were sent to one email address |
+| 503 | An email that the request depends on could not be sent |
 
 ## Rules the RealWorld spec leaves open
 
@@ -233,6 +243,59 @@ The user object includes `membership` (`null` until the user first starts a chec
   the subscription at the provider. Refunding an older payment only marks that payment.
 - A refund is recorded in the moderation log.
 
+## Tips
+
+Anyone can send an author a single payment, with or without an account.
+
+```json
+{ "tip": { "author": "alice", "article": "welcome-to-conduit", "amountCents": 500,
+           "name": "A reader", "message": "Thank you", "email": "reader@example.com" } }
+```
+
+- `author` (a username) and `amountCents` are required. `article` (a slug), `name` and `message` are
+  optional. `email` is required from a guest and ignored from a logged-in user, whose own address is used.
+- The amount is a whole number of cents from 100 to 50000 (1.00 to 500.00 USD). `name` is at most 64
+  characters and `message` at most 280.
+- The article, if given, must be by that author (422) and visible to the tipper (404 if it is hidden).
+- Nobody can tip themselves: not when logged in as the author, and not as a guest using the author's
+  email address (422). A suspended author cannot receive tips (422).
+
+**A tip's status**
+
+| Status | Means |
+| --- | --- |
+| `pending_verification` | A guest has been emailed a code and has not confirmed it yet |
+| `pending_payment` | A checkout is open at the payment provider |
+| `paid` | The provider's webhook said the payment went through |
+| `expired` | The checkout was closed without being paid |
+| `refunded` | An admin gave the payment back |
+
+**Guests and codes**
+
+- A guest's tip starts as `pending_verification` and `checkoutUrl` is `null`. A 6-digit code is emailed.
+  `POST /tips/:reference/verify` with the right code returns the `checkoutUrl` and a `guestToken`.
+- A code works for 10 minutes and once. After 5 wrong tries it stops working, even for the right code.
+- `resend` emails a new code; earlier codes for that tip stop working.
+- At most 5 codes are sent to one address in an hour, across all tips. The next request is a 429.
+- A `guestToken` lasts 30 minutes. Sent as the header `X-Guest-Token` with `POST /tips`, it skips the code
+  for a tip from the same email address. It is not a login and is refused everywhere a login is needed.
+- A logged-in user's tip skips the code and starts as `pending_payment` with a `checkoutUrl`.
+
+**What others can see**
+
+- A tip is addressed by its `reference`, a random id, never by a number that can be counted up.
+  `GET /tips/:reference` needs no login and does not include the tipper's email address.
+- An author sees the tips they were paid (`paid` and `refunded` ones) with the name and message, not the
+  email address. Moderators see the email address in `GET /admin/tips`.
+
+**Paying**
+
+- After the checkout the provider sends the tipper to `WEB_URL/tips/<reference>`, or to the same address
+  with `?left=1` if they cancelled.
+- When the payment goes through, the tipper is emailed a receipt and the author is told. Each is sent once,
+  however many times the webhook is delivered.
+- Refunding a tip's payment marks the tip `refunded`.
+
 ## The fake payment provider
 
 With `PAYMENT_PROVIDER=fake` (the default) the provider is part of this API, so the whole system runs with
@@ -300,5 +363,7 @@ src/
   payment/         the payment provider: the interface, Stripe, and the fake one
   membership/      plans, a membership's status rules, checkout, cancel and resume
   billing/         the webhook, applying its events, refunds, the admin lists
+  tip/             tips, the emailed codes that confirm a guest's address
+  mail/            sending email, or logging it when there is no mail server
   health/          health check
 ```

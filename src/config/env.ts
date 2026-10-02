@@ -79,3 +79,12 @@ export function fakePaySettings(env: NodeJS.ProcessEnv = process.env) {
     webhookUrl: `http://127.0.0.1:${env.PORT || '4000'}/api/payments/webhook`,
   };
 }
+
+export function mailSettings(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    /** With no host, messages are written to the log instead of being sent. */
+    host: env.SMTP_HOST || null,
+    port: Number(env.SMTP_PORT || 1025),
+    from: env.MAIL_FROM || 'Conduit <no-reply@conduit.example>',
+  };
+}

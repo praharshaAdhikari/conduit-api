@@ -13,6 +13,8 @@ import { MembershipService } from '../membership/membership.service';
 import { FakePayService } from '../payment/fake/fake-pay.service';
 import { toPaymentEvent } from '../payment/fake/fake.provider';
 import { ProfileService } from '../profile/profile.service';
+import { Tip } from '../tip/tip.entity';
+import { TipService } from '../tip/tip.service';
 import { User } from '../user/user.entity';
 import { UserService } from '../user/user.service';
 import { loadEnvFile } from './load-env';
@@ -195,6 +197,34 @@ class Seeder {
     await billing.process(toPaymentEvent(event));
     return 'erin (a monthly member) and a members-only article by alice';
   }
+
+  /** A paid tip to alice from someone with no account. */
+  async tips(): Promise<string | null> {
+    const email = 'reader@example.com';
+    const tipRows = this.app.get<Repository<Tip>>(getRepositoryToken(Tip));
+    if (await tipRows.existsBy({ tipperEmail: email })) return null;
+    if (paymentSettings().provider !== 'fake') return null;
+    const tips = this.app.get(TipService);
+    const fakePay = this.app.get(FakePayService);
+    const billing = this.app.get(BillingService);
+
+    // The address counts as confirmed, so no code has to be read from an inbox.
+    const { checkoutId } = await tips.create(
+      {
+        author: USERS[0],
+        article: 'welcome-to-conduit',
+        amountCents: 500,
+        name: 'A grateful reader',
+        message: 'This helped me get started.',
+        email,
+      },
+      undefined,
+      email,
+    );
+    const { event } = await fakePay.pay(checkoutId!, 'never');
+    await billing.process(toPaymentEvent(event));
+    return 'a 5.00 USD tip to alice from a guest';
+  }
 }
 
 async function seed(): Promise<void> {
@@ -217,6 +247,7 @@ async function seed(): Promise<void> {
       await seeder.staff(),
       await seeder.moderated(),
       await seeder.members(),
+      await seeder.tips(),
     ].filter((step) => step !== null);
 
     if (added.length === 0) {
