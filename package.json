@@ -4,7 +4,7 @@
   "description": "Conduit API: a RealWorld backend on NestJS, TypeORM and MySQL",
   "author": "",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
