@@ -1,0 +1,22 @@
+# Local MySQL for development. The whole system (database, API and web app)
+# is started from the conduit-qa repo instead.
+services:
+  mysql:
+    image: mysql:8.0
+    ports:
+      - '127.0.0.1:4306:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: conduit
+      MYSQL_USER: conduit
+      MYSQL_PASSWORD: conduit
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD-SHELL', 'mysql -h 127.0.0.1 -uconduit -pconduit -e "SELECT 1" conduit']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+volumes:
+  mysql-data:
