@@ -23,3 +23,6 @@ export const invalid = (errors: ErrorFields) =>
 
 export const unauthorized = (message: string) =>
   new ApiError(HttpStatus.UNAUTHORIZED, { token: [message] });
+
+export const suspended = () =>
+  new ApiError(HttpStatus.FORBIDDEN, { account: ['is suspended'] });

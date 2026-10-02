@@ -8,9 +8,11 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
+import { hasRole } from '../auth/roles';
 import { forbidden, notFound } from '../common/api-error';
 import { PaginationQuery } from '../common/pagination.dto';
 import { ProfileService, toProfile } from '../profile/profile.service';
+import { User } from '../user/user.entity';
 import {
   ArticlePreview,
   ArticleView,
@@ -35,6 +37,7 @@ export class ArticleService {
     @InjectRepository(Article) private readonly articles: Repository<Article>,
     @InjectRepository(Favorite)
     private readonly favorites: Repository<Favorite>,
+    @InjectRepository(User) private readonly users: Repository<User>,
     private readonly dataSource: DataSource,
     private readonly profiles: ProfileService,
   ) {}
@@ -74,7 +77,7 @@ export class ArticleService {
   }
 
   async get(slug: string, viewerId?: number): Promise<ArticleView> {
-    return this.view(await this.getBySlug(slug), viewerId);
+    return this.view(await this.getVisible(slug, viewerId), viewerId);
   }
 
   async create(dto: CreateArticleDto, authorId: number): Promise<ArticleView> {
@@ -91,6 +94,9 @@ export class ArticleService {
             description: dto.description,
             body: dto.body,
             authorId,
+            hiddenAt: null,
+            hiddenBy: null,
+            hiddenReason: null,
             createdAt: now,
             updatedAt: now,
           }),
@@ -146,7 +152,7 @@ export class ArticleService {
   }
 
   async favorite(slug: string, userId: number): Promise<ArticleView> {
-    const article = await this.getBySlug(slug);
+    const article = await this.getVisible(slug, userId);
     // Favoriting twice is not an error; it counts once.
     await this.favorites
       .createQueryBuilder()
@@ -158,7 +164,7 @@ export class ArticleService {
   }
 
   async unfavorite(slug: string, userId: number): Promise<ArticleView> {
-    const article = await this.getBySlug(slug);
+    const article = await this.getVisible(slug, userId);
     await this.favorites.delete({ userId, articleId: article.id });
     return this.view(article, userId);
   }
@@ -172,6 +178,32 @@ export class ArticleService {
     return article;
   }
 
+  /**
+   * The article as this viewer may see it: a hidden one is a 404 for everyone
+   * but its author and moderators.
+   */
+  async getVisible(slug: string, viewerId?: number): Promise<Article> {
+    const article = await this.getBySlug(slug);
+    if (
+      article.hiddenAt !== null &&
+      !(await this.maySeeHidden(article, viewerId))
+    ) {
+      throw notFound('article');
+    }
+    return article;
+  }
+
+  private async maySeeHidden(
+    article: Article,
+    viewerId?: number,
+  ): Promise<boolean> {
+    if (viewerId === undefined) return false;
+    if (article.authorId === viewerId) return true;
+    const viewer = await this.users.findOneBy({ id: viewerId });
+    return viewer !== null && hasRole(viewer.role, 'moderator');
+  }
+
+  // The author may edit or delete their article while it is hidden.
   private async getOwn(slug: string, userId: number): Promise<Article> {
     const article = await this.getBySlug(slug);
     if (article.authorId !== userId) throw forbidden('article');
@@ -179,11 +211,15 @@ export class ArticleService {
   }
 
   private baseQuery(): SelectQueryBuilder<Article> {
-    return this.articles
-      .createQueryBuilder('article')
-      .innerJoinAndSelect('article.author', 'author')
-      .orderBy('article.createdAt', 'DESC')
-      .addOrderBy('article.id', 'DESC');
+    return (
+      this.articles
+        .createQueryBuilder('article')
+        .innerJoinAndSelect('article.author', 'author')
+        // Hidden articles are in no list, not even their author's.
+        .where('article.hiddenAt IS NULL')
+        .orderBy('article.createdAt', 'DESC')
+        .addOrderBy('article.id', 'DESC')
+    );
   }
 
   private async page(
@@ -195,7 +231,7 @@ export class ArticleService {
     const rows = await qb.limit(limit).offset(offset).getMany();
     const articles = (await this.present(rows, viewerId)).map(
       // Lists leave the body out; it is only returned for a single article.
-      ({ body, ...preview }): ArticlePreview => preview,
+      ({ body, hidden, hiddenReason, ...preview }): ArticlePreview => preview,
     );
     return { articles, articlesCount };
   }
@@ -259,6 +295,8 @@ export class ArticleService {
       updatedAt: article.updatedAt,
       favorited: favoritedIds.has(article.id),
       favoritesCount: counts.get(article.id) ?? 0,
+      hidden: article.hiddenAt !== null,
+      hiddenReason: article.hiddenReason,
       author: toProfile(article.author, followed.has(article.authorId)),
     }));
   }

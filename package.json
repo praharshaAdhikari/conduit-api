@@ -20,7 +20,9 @@
     "typecheck": "tsc --noEmit",
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
     "seed:built": "node dist/database/seed.js",
-    "db:migrate:built": "node dist/database/migrate.js"
+    "db:migrate:built": "node dist/database/migrate.js",
+    "user:role": "ts-node src/database/set-role.ts",
+    "user:role:built": "node dist/database/set-role.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

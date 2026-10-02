@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AdminModule } from './admin/admin.module';
 import { ArticleModule } from './article/article.module';
 import { AuthModule } from './auth/auth.module';
 import { CommentModule } from './comment/comment.module';
@@ -20,6 +21,7 @@ import { UserModule } from './user/user.module';
     ProfileModule,
     ArticleModule,
     CommentModule,
+    AdminModule,
   ],
   controllers: [HealthController, TagController],
 })

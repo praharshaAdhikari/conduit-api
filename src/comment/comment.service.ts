@@ -17,7 +17,7 @@ export class CommentService {
 
   /** An article's comments, newest first. */
   async list(slug: string, viewerId?: number): Promise<CommentView[]> {
-    const article = await this.articles.getBySlug(slug);
+    const article = await this.articles.getVisible(slug, viewerId);
     const comments = await this.comments.find({
       where: { articleId: article.id },
       relations: { author: true },
@@ -37,7 +37,7 @@ export class CommentService {
     dto: CreateCommentDto,
     authorId: number,
   ): Promise<CommentView> {
-    const article = await this.articles.getBySlug(slug);
+    const article = await this.articles.getVisible(slug, authorId);
     const now = new Date();
     const { id } = await this.comments.save(
       this.comments.create({
@@ -58,7 +58,7 @@ export class CommentService {
 
   /** Only the comment's author can delete it. */
   async delete(slug: string, commentId: number, userId: number): Promise<void> {
-    const article = await this.articles.getBySlug(slug);
+    const article = await this.articles.getVisible(slug, userId);
     const comment = Number.isInteger(commentId)
       ? await this.comments.findOneBy({ id: commentId, articleId: article.id })
       : null;

@@ -3,7 +3,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as argon2 from 'argon2';
 import { Not, Repository } from 'typeorm';
 import { TokenService } from '../auth/token.service';
-import { alreadyTaken, ApiError, unauthorized } from '../common/api-error';
+import {
+  alreadyTaken,
+  ApiError,
+  suspended,
+  unauthorized,
+} from '../common/api-error';
 import { LoginDto, RegisterDto, UpdateUserDto, UserResponse } from './user.dto';
 import { User } from './user.entity';
 
@@ -30,6 +35,9 @@ export class UserService {
         passwordHash: await argon2.hash(dto.password),
         bio: null,
         image: null,
+        role: 'user',
+        suspendedAt: null,
+        suspendedReason: null,
         createdAt: now,
         updatedAt: now,
       }),
@@ -43,6 +51,8 @@ export class UserService {
     if (!user || !(await argon2.verify(user.passwordHash, dto.password))) {
       throw new ApiError(HttpStatus.UNAUTHORIZED, { credentials: ['invalid'] });
     }
+    // Checked after the password, so only the owner learns of the suspension.
+    if (user.suspendedAt !== null) throw suspended();
     return this.toResponse(user);
   }
 
@@ -95,6 +105,7 @@ export class UserService {
         username: user.username,
         bio: user.bio,
         image: user.image,
+        role: user.role,
       },
     };
   }

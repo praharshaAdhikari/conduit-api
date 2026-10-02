@@ -115,4 +115,7 @@ export interface ArticlePreview {
 
 export interface ArticleView extends ArticlePreview {
   body: string;
+  // Only the author and moderators can load a hidden article at all.
+  hidden: boolean;
+  hiddenReason: string | null;
 }

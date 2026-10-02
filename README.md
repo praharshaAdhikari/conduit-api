@@ -29,8 +29,14 @@ npm run start:dev     # http://localhost:4000/api
 
 - API reference (Swagger): http://localhost:4000/api/docs
 - Health check: http://localhost:4000/api/health
-- Demo logins after `npm run seed`: `alice@example.com`, `bob@example.com`, `carol@example.com`,
-  all with the password `password123`
+- Demo logins after `npm run seed`, all with the password `password123`:
+
+  | Email | Who |
+  | --- | --- |
+  | `alice@example.com`, `bob@example.com`, `carol@example.com` | Ordinary users with articles |
+  | `mod@example.com` | A moderator |
+  | `admin@example.com` | An admin |
+  | `dave@example.com` | A suspended user; his one article is hidden |
 
 `npm run db:stop` stops MySQL and keeps its data; `docker compose down -v` deletes the data.
 
@@ -44,7 +50,8 @@ npm run start:dev     # http://localhost:4000/api
 | `npm run typecheck` | TypeScript, without writing files |
 | `npm run format` | Prettier |
 | `npm run db:migrate` | Applies the SQL files in `migrations/` that have not been applied yet |
-| `npm run seed` | Adds the demo data; does nothing if it is already there |
+| `npm run seed` | Adds the demo data; skips whatever is already there |
+| `npm run user:role -- <username> <role>` | Sets a user's role (`user`, `moderator` or `admin`); this is how the first admin is made |
 
 ## Endpoints
 
@@ -71,6 +78,14 @@ All under `/api`. Send the token as `Authorization: Token <token>`.
 | `POST /articles/:slug/comments` | required | Add a comment |
 | `DELETE /articles/:slug/comments/:id` | required | Delete a comment (its author only) |
 | `GET /tags` | none | Tags in use |
+| `GET /admin/users` | moderator | All users; filter `search` (part of a username or email); paging |
+| `POST /admin/users/:username/suspend` | moderator | Suspend; body `{ "moderation": { "reason": "..." } }` |
+| `DELETE /admin/users/:username/suspend` | moderator | Lift a suspension |
+| `PUT /admin/users/:username/role` | admin | Set a role; body `{ "user": { "role": "moderator" } }` |
+| `GET /admin/articles` | moderator | All articles; filter `hidden` (`true` or `false`); paging |
+| `POST /admin/articles/:slug/hide` | moderator | Hide; body `{ "moderation": { "reason": "..." } }` |
+| `DELETE /admin/articles/:slug/hide` | moderator | Show again |
+| `GET /admin/actions` | moderator | The moderation log, newest first; paging |
 | `GET /health` | none | Whether the API can reach the database |
 
 Errors always have the body `{ "errors": { "<field>": ["<message>"] } }`:
@@ -78,10 +93,10 @@ Errors always have the body `{ "errors": { "<field>": ["<message>"] } }`:
 | Status | When |
 | --- | --- |
 | 401 | The token is missing or invalid, or the login is wrong |
-| 403 | The article or comment belongs to someone else |
-| 404 | The article, comment or profile does not exist |
+| 403 | The article or comment belongs to someone else, the account is suspended, or its role does not allow the action |
+| 404 | The article, comment, profile or user does not exist, or the article is hidden from you |
 | 409 | The username or email is already taken |
-| 422 | A field is missing, blank or malformed |
+| 422 | A field is missing, blank or malformed, or the action does not apply (for example, hiding an article that is already hidden) |
 
 ## Rules the RealWorld spec leaves open
 
@@ -99,6 +114,45 @@ These are this implementation's choices:
 - Comments are listed newest first. `GET /tags` lists the most used tags first.
 - Tokens expire after `JWT_EXPIRES_IN` (7 days by default).
 
+## Roles and moderation
+
+There are three roles: `user`, `moderator` and `admin`. Each can do everything the one before it can.
+New accounts are users. The user object returned by the user endpoints includes `role`.
+
+**Suspended accounts**
+
+- A suspended user cannot log in, and every request that needs a login is refused with 403 and
+  `{ "errors": { "account": ["is suspended"] } }`, including with a token issued before the suspension.
+- On endpoints where login is optional, a suspended user's token is ignored: they see what an
+  anonymous visitor sees.
+- Their profile, articles and comments stay visible to everyone else.
+- A moderator can suspend and unsuspend users. An admin can also suspend and unsuspend moderators.
+  Nobody can suspend an admin (403), and nobody can suspend themselves (422).
+- Suspending needs a reason of 1 to 255 characters. Suspending a suspended user, or unsuspending one
+  who is not, is a 422.
+
+**Hidden articles**
+
+- A hidden article is left out of `GET /articles`, the feed and `GET /tags`, for everyone including
+  its author.
+- `GET /articles/:slug`, its comments and its favorite endpoints answer 404, except to the author and
+  to moderators. They get the article with `hidden: true` and `hiddenReason`.
+- The author can still edit and delete a hidden article, but cannot show it again.
+- Hiding needs a reason of 1 to 255 characters. Hiding a hidden article, or showing one that is not
+  hidden, is a 422.
+
+**Roles**
+
+- Only an admin can change a role. An admin cannot change their own role (422), so there is always at
+  least one admin. A suspended user's role cannot be changed (422).
+- Setting the role a user already has succeeds and changes nothing.
+- A change of role or a suspension applies to the user's next request; they do not need a new token.
+
+**The log**
+
+- Every suspension, hiding and change of role is recorded with who did it, to what, and the reason.
+  Setting a role the user already has is not recorded.
+
 ## Layout
 
 ```
@@ -106,13 +160,14 @@ migrations/        numbered SQL files; the schema comes only from these
 src/
   main.ts          starts the app: /api prefix, CORS, validation, error format, Swagger
   config/          reads environment variables
-  database/        TypeORM connection, the migration runner, the seed
+  database/        TypeORM connection, the migration runner, the seed, the role command
   common/          error format, validation, paging
-  auth/            tokens and the guards that check them
+  auth/            tokens, roles, and the guards that check them
   user/            register, log in, current user
   profile/         profiles, follow and unfollow
   article/         articles, tags, favorites
   comment/         comments
   tag/             the tag list
+  admin/           suspending users, hiding articles, roles, the moderation log
   health/          health check
 ```

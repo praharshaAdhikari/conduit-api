@@ -9,6 +9,7 @@ import {
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
+import type { Role } from '../auth/roles';
 import { BLANK } from '../common/validation';
 
 export const PASSWORD_MIN = 8;
@@ -109,5 +110,6 @@ export interface UserResponse {
     username: string;
     bio: string | null;
     image: string | null;
+    role: Role;
   };
 }

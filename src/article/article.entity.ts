@@ -32,6 +32,24 @@ export class Article {
   @JoinColumn({ name: 'author_id' })
   author: User;
 
+  @Column({ name: 'hidden_at', type: 'datetime', precision: 3, nullable: true })
+  hiddenAt: Date | null;
+
+  @Column({ name: 'hidden_by', type: 'int', unsigned: true, nullable: true })
+  hiddenBy: number | null;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'hidden_by' })
+  hiddenByUser: User | null;
+
+  @Column({
+    name: 'hidden_reason',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  hiddenReason: string | null;
+
   @Column({ name: 'created_at', type: 'datetime', precision: 3 })
   createdAt: Date;
 
