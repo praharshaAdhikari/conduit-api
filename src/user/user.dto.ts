@@ -11,6 +11,7 @@ import {
 } from 'class-validator';
 import type { Role } from '../auth/roles';
 import { BLANK } from '../common/validation';
+import type { MembershipView } from '../membership/membership.dto';
 
 export const PASSWORD_MIN = 8;
 export const PASSWORD_MAX = 128;
@@ -111,5 +112,7 @@ export interface UserResponse {
     bio: string | null;
     image: string | null;
     role: Role;
+    /** Null until the user starts a membership. */
+    membership: MembershipView | null;
   };
 }

@@ -12,7 +12,10 @@ import { ROLES } from '../auth/roles';
 import type { Role } from '../auth/roles';
 import { PaginationQuery } from '../common/pagination.dto';
 import { BLANK } from '../common/validation';
-import type { ModerationActionName } from './moderation-action.entity';
+import type {
+  ModerationActionName,
+  ModerationTargetType,
+} from './moderation-action.entity';
 
 export const REASON_MAX = 255;
 
@@ -82,7 +85,7 @@ export interface ModerationActionView {
   id: number;
   action: ModerationActionName;
   moderator: string;
-  targetType: 'user' | 'article';
+  targetType: ModerationTargetType;
   target: string;
   note: string | null;
   createdAt: Date;

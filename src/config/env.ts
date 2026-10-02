@@ -43,3 +43,39 @@ export function corsOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
     .map((origin) => origin.trim())
     .filter(Boolean);
 }
+
+function withoutTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
+export function paymentSettings(env: NodeJS.ProcessEnv = process.env) {
+  const provider = env.PAYMENT_PROVIDER || 'fake';
+  if (provider !== 'fake' && provider !== 'stripe') {
+    throw new Error('PAYMENT_PROVIDER must be "fake" or "stripe"');
+  }
+  const port = env.PORT || '4000';
+  return {
+    provider: provider,
+    /** Where the web app is; customers are sent back there after paying. */
+    webUrl: withoutTrailingSlash(env.WEB_URL || 'http://localhost:4100'),
+    /** Where a browser reaches this API; the fake provider's checkout page is served from it. */
+    apiPublicUrl: withoutTrailingSlash(
+      env.API_PUBLIC_URL || `http://localhost:${port}`,
+    ),
+  };
+}
+
+export function stripeSettings(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    secretKey: required(env, 'STRIPE_SECRET_KEY'),
+    webhookSecret: required(env, 'STRIPE_WEBHOOK_SECRET'),
+  };
+}
+
+export function fakePaySettings(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    webhookSecret: env.FAKE_PAY_WEBHOOK_SECRET || 'fake-pay-local-secret',
+    // The fake provider calls this API's own webhook route, as Stripe would from outside.
+    webhookUrl: `http://127.0.0.1:${env.PORT || '4000'}/api/payments/webhook`,
+  };
+}

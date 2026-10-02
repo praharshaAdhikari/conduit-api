@@ -25,6 +25,9 @@ export class Article {
   @Column({ type: 'mediumtext' })
   body: string;
 
+  @Column({ name: 'members_only', type: 'boolean' })
+  membersOnly: boolean;
+
   @Column({ name: 'author_id', unsigned: true })
   authorId: number;
 

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { invalid, notFound } from '../common/api-error';
+import { MembershipService } from '../membership/membership.service';
 import { User } from '../user/user.entity';
 import { Follow } from './follow.entity';
 
@@ -10,14 +11,21 @@ export interface Profile {
   bio: string | null;
   image: string | null;
   following: boolean;
+  /** Whether the user is a paying member right now. */
+  member: boolean;
 }
 
-export function toProfile(user: User, following: boolean): Profile {
+export function toProfile(
+  user: User,
+  following: boolean,
+  member: boolean,
+): Profile {
   return {
     username: user.username,
     bio: user.bio,
     image: user.image,
     following,
+    member,
   };
 }
 
@@ -26,12 +34,13 @@ export class ProfileService {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(Follow) private readonly follows: Repository<Follow>,
+    private readonly memberships: MembershipService,
   ) {}
 
   async get(username: string, viewerId?: number): Promise<Profile> {
     const user = await this.getUser(username);
     const followed = await this.followedAmong([user.id], viewerId);
-    return toProfile(user, followed.has(user.id));
+    return toProfile(user, followed.has(user.id), await this.isMember(user));
   }
 
   async follow(username: string, viewerId: number): Promise<Profile> {
@@ -50,13 +59,13 @@ export class ProfileService {
       })
       .orIgnore()
       .execute();
-    return toProfile(user, true);
+    return toProfile(user, true, await this.isMember(user));
   }
 
   async unfollow(username: string, viewerId: number): Promise<Profile> {
     const user = await this.getUser(username);
     await this.follows.delete({ followerId: viewerId, followedId: user.id });
-    return toProfile(user, false);
+    return toProfile(user, false, await this.isMember(user));
   }
 
   /** Which of these users the viewer follows. Empty for an anonymous viewer. */
@@ -70,6 +79,15 @@ export class ProfileService {
       followedId: In(userIds),
     });
     return new Set(rows.map((row) => row.followedId));
+  }
+
+  /** Which of these users are members right now. */
+  membersAmong(userIds: number[]): Promise<Set<number>> {
+    return this.memberships.membersAmong(userIds);
+  }
+
+  private isMember(user: User): Promise<boolean> {
+    return this.memberships.hasAccess(user.id);
   }
 
   private async getUser(username: string): Promise<User> {

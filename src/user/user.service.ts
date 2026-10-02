@@ -9,6 +9,7 @@ import {
   suspended,
   unauthorized,
 } from '../common/api-error';
+import { MembershipService } from '../membership/membership.service';
 import { LoginDto, RegisterDto, UpdateUserDto, UserResponse } from './user.dto';
 import { User } from './user.entity';
 
@@ -22,6 +23,7 @@ export class UserService {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly tokens: TokenService,
+    private readonly memberships: MembershipService,
   ) {}
 
   async register(dto: RegisterDto): Promise<UserResponse> {
@@ -97,7 +99,7 @@ export class UserService {
     }
   }
 
-  private toResponse(user: User): UserResponse {
+  private async toResponse(user: User): Promise<UserResponse> {
     return {
       user: {
         email: user.email,
@@ -106,6 +108,7 @@ export class UserService {
         bio: user.bio,
         image: user.image,
         role: user.role,
+        membership: await this.memberships.get(user.id),
       },
     };
   }

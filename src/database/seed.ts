@@ -6,8 +6,12 @@ import { AdminService } from '../admin/admin.service';
 import { AppModule } from '../app.module';
 import { ArticleService } from '../article/article.service';
 import { Role } from '../auth/roles';
+import { BillingService } from '../billing/billing.service';
 import { CommentService } from '../comment/comment.service';
-import { databaseSettings } from '../config/env';
+import { databaseSettings, paymentSettings } from '../config/env';
+import { MembershipService } from '../membership/membership.service';
+import { FakePayService } from '../payment/fake/fake-pay.service';
+import { toPaymentEvent } from '../payment/fake/fake.provider';
 import { ProfileService } from '../profile/profile.service';
 import { User } from '../user/user.entity';
 import { UserService } from '../user/user.service';
@@ -160,6 +164,37 @@ class Seeder {
     await admin.suspend('dave', 'Posted advertising', moderator);
     return 'dave (suspended) and his hidden article';
   }
+
+  /** A paying member, and a members-only article for her to read. */
+  async members(): Promise<string | null> {
+    if (await this.exists('erin')) return null;
+    // A membership is paid for through the provider, and only the fake one
+    // can be paid from here.
+    if (paymentSettings().provider !== 'fake') return null;
+    const articles = this.app.get(ArticleService);
+    const memberships = this.app.get(MembershipService);
+    const fakePay = this.app.get(FakePayService);
+    const billing = this.app.get(BillingService);
+
+    const alice = await this.users.findOneByOrFail({ username: USERS[0] });
+    await articles.create(
+      {
+        title: 'Test design techniques, in full',
+        description: 'Boundaries, equivalence classes and decision tables',
+        body: 'Pick the values where behaviour changes, one from each group that behaves alike, and every combination of conditions that leads to a different result.',
+        tagList: ['testing', 'members'],
+        membersOnly: true,
+      },
+      alice.id,
+    );
+
+    const erin = await this.register('erin');
+    const { checkoutId } = await memberships.startCheckout(erin, 'monthly');
+    // The webhook is applied directly: the API may not be running to receive it.
+    const { event } = await fakePay.pay(checkoutId, 'never');
+    await billing.process(toPaymentEvent(event));
+    return 'erin (a monthly member) and a members-only article by alice';
+  }
 }
 
 async function seed(): Promise<void> {
@@ -181,6 +216,7 @@ async function seed(): Promise<void> {
       await seeder.writers(),
       await seeder.staff(),
       await seeder.moderated(),
+      await seeder.members(),
     ].filter((step) => step !== null);
 
     if (added.length === 0) {

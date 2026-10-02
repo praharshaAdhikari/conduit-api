@@ -16,7 +16,15 @@ import {
 import {
   ModerationAction,
   ModerationActionName,
+  ModerationTargetType,
 } from './moderation-action.entity';
+
+export interface ActionTarget {
+  type: ModerationTargetType;
+  id: number;
+  label: string;
+  note: string | null;
+}
 
 /** Makes % and _ in a search term match themselves in a LIKE pattern. */
 export function escapeLike(term: string): string {
@@ -197,7 +205,25 @@ export class AdminService {
     return { actions, actionsCount };
   }
 
-  private async log(
+  /** Adds an entry to the moderation log, inside the caller's transaction. */
+  async record(
+    manager: EntityManager,
+    actor: User,
+    action: ModerationActionName,
+    target: ActionTarget,
+  ): Promise<void> {
+    await manager.insert(ModerationAction, {
+      moderatorId: actor.id,
+      action,
+      targetType: target.type,
+      targetId: target.id,
+      targetLabel: target.label,
+      note: target.note,
+      createdAt: new Date(),
+    });
+  }
+
+  private log(
     manager: EntityManager,
     actor: User,
     action: ModerationActionName,
@@ -205,14 +231,11 @@ export class AdminService {
     note: string | null,
   ): Promise<void> {
     const isUser = target instanceof User;
-    await manager.insert(ModerationAction, {
-      moderatorId: actor.id,
-      action,
-      targetType: isUser ? 'user' : 'article',
-      targetId: target.id,
-      targetLabel: isUser ? target.username : target.slug,
+    return this.record(manager, actor, action, {
+      type: isUser ? 'user' : 'article',
+      id: target.id,
+      label: isUser ? target.username : target.slug,
       note,
-      createdAt: new Date(),
     });
   }
 

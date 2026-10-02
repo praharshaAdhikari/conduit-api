@@ -4,13 +4,14 @@ import {
   DataSource,
   EntityManager,
   In,
-  QueryFailedError,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
 import { hasRole } from '../auth/roles';
 import { forbidden, notFound } from '../common/api-error';
+import { isDuplicateKey } from '../common/db-errors';
 import { PaginationQuery } from '../common/pagination.dto';
+import { MembershipService } from '../membership/membership.service';
 import { ProfileService, toProfile } from '../profile/profile.service';
 import { User } from '../user/user.entity';
 import {
@@ -24,13 +25,6 @@ import { Article, ArticleTag, Favorite, Tag } from './article.entity';
 import { slugify, withSuffix } from './slug';
 import { normalizeTags } from './tags';
 
-function isDuplicateKey(error: unknown): boolean {
-  return (
-    error instanceof QueryFailedError &&
-    (error.driverError as { code?: string }).code === 'ER_DUP_ENTRY'
-  );
-}
-
 @Injectable()
 export class ArticleService {
   constructor(
@@ -40,6 +34,7 @@ export class ArticleService {
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly dataSource: DataSource,
     private readonly profiles: ProfileService,
+    private readonly memberships: MembershipService,
   ) {}
 
   list(query: ListArticlesQuery, viewerId?: number) {
@@ -93,6 +88,7 @@ export class ArticleService {
             title: dto.title,
             description: dto.description,
             body: dto.body,
+            membersOnly: dto.membersOnly ?? false,
             authorId,
             hiddenAt: null,
             hiddenBy: null,
@@ -120,6 +116,7 @@ export class ArticleService {
     if (dto.title !== undefined) article.title = dto.title;
     if (dto.description !== undefined) article.description = dto.description;
     if (dto.body !== undefined) article.body = dto.body;
+    if (dto.membersOnly !== undefined) article.membersOnly = dto.membersOnly;
     article.updatedAt = new Date();
 
     const save = (newSlug: string) =>
@@ -130,6 +127,7 @@ export class ArticleService {
           title: article.title,
           description: article.description,
           body: article.body,
+          membersOnly: article.membersOnly,
           updatedAt: article.updatedAt,
         });
         if (dto.tagList !== undefined) {
@@ -199,8 +197,23 @@ export class ArticleService {
   ): Promise<boolean> {
     if (viewerId === undefined) return false;
     if (article.authorId === viewerId) return true;
-    const viewer = await this.users.findOneBy({ id: viewerId });
-    return viewer !== null && hasRole(viewer.role, 'moderator');
+    return this.isModerator(viewerId);
+  }
+
+  /** A members-only article can be read by members, its author and moderators. */
+  private async mayRead(article: Article, viewerId?: number): Promise<boolean> {
+    if (!article.membersOnly) return true;
+    if (viewerId === undefined) return false;
+    if (article.authorId === viewerId) return true;
+    return (
+      (await this.memberships.hasAccess(viewerId)) ||
+      (await this.isModerator(viewerId))
+    );
+  }
+
+  private async isModerator(userId: number): Promise<boolean> {
+    const user = await this.users.findOneBy({ id: userId });
+    return user !== null && hasRole(user.role, 'moderator');
   }
 
   // The author may edit or delete their article while it is hidden.
@@ -231,7 +244,8 @@ export class ArticleService {
     const rows = await qb.limit(limit).offset(offset).getMany();
     const articles = (await this.present(rows, viewerId)).map(
       // Lists leave the body out; it is only returned for a single article.
-      ({ body, hidden, hiddenReason, ...preview }): ArticlePreview => preview,
+      ({ body, locked, hidden, hiddenReason, ...preview }): ArticlePreview =>
+        preview,
     );
     return { articles, articlesCount };
   }
@@ -240,7 +254,10 @@ export class ArticleService {
     article: Article,
     viewerId?: number,
   ): Promise<ArticleView> {
-    return (await this.present([article], viewerId))[0];
+    const [view] = await this.present([article], viewerId);
+    return (await this.mayRead(article, viewerId))
+      ? view
+      : { ...view, body: '', locked: true };
   }
 
   /** Adds tags, favorite counts and what the viewer favorited or follows. */
@@ -273,10 +290,9 @@ export class ArticleService {
       viewerId === undefined
         ? []
         : await this.favorites.findBy({ userId: viewerId, articleId: In(ids) });
-    const followed = await this.profiles.followedAmong(
-      articles.map((article) => article.authorId),
-      viewerId,
-    );
+    const authorIds = articles.map((article) => article.authorId);
+    const followed = await this.profiles.followedAmong(authorIds, viewerId);
+    const members = await this.memberships.membersAmong(authorIds);
 
     const counts = new Map(
       countRows.map((row) => [row.articleId, Number(row.count)]),
@@ -295,9 +311,15 @@ export class ArticleService {
       updatedAt: article.updatedAt,
       favorited: favoritedIds.has(article.id),
       favoritesCount: counts.get(article.id) ?? 0,
+      membersOnly: article.membersOnly,
+      locked: false,
       hidden: article.hiddenAt !== null,
       hiddenReason: article.hiddenReason,
-      author: toProfile(article.author, followed.has(article.authorId)),
+      author: toProfile(
+        article.author,
+        followed.has(article.authorId),
+        members.has(article.authorId),
+      ),
     }));
   }
 

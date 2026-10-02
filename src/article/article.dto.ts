@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsDefined,
   IsNotEmpty,
   IsOptional,
@@ -45,6 +46,10 @@ export class CreateArticleDto {
   @IsString(tagMessages.text)
   @MaxLength(TAG_MAX, tagMessages.length)
   tagList?: string[];
+
+  @IsOptional()
+  @IsBoolean({ message: 'must be true or false' })
+  membersOnly?: boolean;
 }
 
 export class CreateArticleRequest {
@@ -78,6 +83,10 @@ export class UpdateArticleDto {
   @IsString(tagMessages.text)
   @MaxLength(TAG_MAX, tagMessages.length)
   tagList?: string[];
+
+  @ValidateIf((dto: UpdateArticleDto) => dto.membersOnly !== undefined)
+  @IsBoolean({ message: 'must be true or false' })
+  membersOnly?: boolean;
 }
 
 export class UpdateArticleRequest {
@@ -110,11 +119,15 @@ export interface ArticlePreview {
   updatedAt: Date;
   favorited: boolean;
   favoritesCount: number;
+  membersOnly: boolean;
   author: Profile;
 }
 
 export interface ArticleView extends ArticlePreview {
+  /** Empty when `locked`. */
   body: string;
+  /** A members-only article this viewer may not read: the body is withheld. */
+  locked: boolean;
   // Only the author and moderators can load a hidden article at all.
   hidden: boolean;
   hiddenReason: string | null;

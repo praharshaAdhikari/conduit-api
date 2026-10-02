@@ -13,8 +13,10 @@ export const MODERATION_ACTIONS = [
   'hide',
   'unhide',
   'set_role',
+  'refund',
 ] as const;
 export type ModerationActionName = (typeof MODERATION_ACTIONS)[number];
+export type ModerationTargetType = 'user' | 'article' | 'payment';
 
 @Entity('moderation_actions')
 export class ModerationAction {
@@ -32,7 +34,7 @@ export class ModerationAction {
   action: ModerationActionName;
 
   @Column({ name: 'target_type', type: 'varchar', length: 16 })
-  targetType: 'user' | 'article';
+  targetType: ModerationTargetType;
 
   @Column({ name: 'target_id', unsigned: true })
   targetId: number;

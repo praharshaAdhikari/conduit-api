@@ -23,12 +23,15 @@ export class CommentService {
       relations: { author: true },
       order: { createdAt: 'DESC', id: 'DESC' },
     });
-    const followed = await this.profiles.followedAmong(
-      comments.map((comment) => comment.authorId),
-      viewerId,
-    );
+    const authorIds = comments.map((comment) => comment.authorId);
+    const followed = await this.profiles.followedAmong(authorIds, viewerId);
+    const members = await this.profiles.membersAmong(authorIds);
     return comments.map((comment) =>
-      this.toView(comment, followed.has(comment.authorId)),
+      this.toView(
+        comment,
+        followed.has(comment.authorId),
+        members.has(comment.authorId),
+      ),
     );
   }
 
@@ -52,8 +55,9 @@ export class CommentService {
       where: { id },
       relations: { author: true },
     });
+    const members = await this.profiles.membersAmong([authorId]);
     // Nobody follows themselves, so the author of a new comment is not followed.
-    return this.toView(comment, false);
+    return this.toView(comment, false, members.has(authorId));
   }
 
   /** Only the comment's author can delete it. */
@@ -67,13 +71,17 @@ export class CommentService {
     await this.comments.delete(comment.id);
   }
 
-  private toView(comment: Comment, following: boolean): CommentView {
+  private toView(
+    comment: Comment,
+    following: boolean,
+    member: boolean,
+  ): CommentView {
     return {
       id: comment.id,
       createdAt: comment.createdAt,
       updatedAt: comment.updatedAt,
       body: comment.body,
-      author: toProfile(comment.author, following),
+      author: toProfile(comment.author, following, member),
     };
   }
 }
